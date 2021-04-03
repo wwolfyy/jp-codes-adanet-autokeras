@@ -18,9 +18,11 @@ max_trials = 500
 validation_size = 32
 max_rows = 1000
 target_col = "target"
-target_ATP = "KOSPIb1f1"
-dataset_id = "bNsCFCCXFCC"
-data_folder = "20210219_" + dataset_id + "/"
+target_ATP = "KGBfub1f1"
+# target_ATP = "KOSPIb1f0"
+# dataset_id = "bNsCFCCXFCC"
+dataset_id = "bNsCFOCOFOC"
+data_folder = "20210214_" + dataset_id + "/"
 
 root_folder = "/home/lstm/Insync/jaesangpark@gmail.com/Google Drive/Data Exchange/autoML_train_test_data/"
 output_folder = "/home/lstm/Desktop/AutoKeras_output/"+target_ATP+dataset_id+"/"
@@ -169,3 +171,10 @@ for i, j in zip(datalist_trainvalid.iterrows(), datalist_test.iterrows()):
 # print(loaded_model.evaluate(test_file_path, "survived"))
 
 # %% create docker image
+with tf.device('/gpu:0'):
+    a = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[2, 3], name='a')
+    b = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2], name='b')
+    c = tf.matmul(a, b)
+
+with tf.Session() as sess:
+    print (sess.run(c))

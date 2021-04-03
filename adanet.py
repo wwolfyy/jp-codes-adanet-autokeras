@@ -1,6 +1,5 @@
 # %% import packages
-from datetime import datetime
-import matplotlib.pyplot as plt
+# from datetime import datetime
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -9,7 +8,7 @@ import os
 from sklearn.metrics import r2_score, accuracy_score
 
 # define train/evaluate params
-max_steps = 5000
+max_steps = 3000
 
 # %% define data
 validation_size = 32
@@ -20,7 +19,7 @@ dataset_id = "bNsCFCCOFOC"
 data_folder = "20210204_bNsCFCCOFOC/"
 
 root_folder = "/home/lstm/Insync/jaesangpark@gmail.com/Google Drive/Data Exchange/autoML_train_test_data/"
-output_folder = "/home/lstm/Desktop/AutoKeras_output/" + target_ATP + dataset_id + "/"
+output_folder = "/home/lstm/Desktop/adanet_output/" + target_ATP + dataset_id + "/"
 
 # root_folder = r"C:\Users\jp\Google Drive\Data Exchange\autoML_train_test_data\\"
 # output_folder = r"C:\Users\jp\Downloads\\"+target_ATP+dataset_id+"\\"
@@ -42,14 +41,30 @@ metrics = pd.DataFrame({"corr": [np.nan], "r2": [np.nan], "acc": [np.nan]}, inde
 for i, j in zip(datalist_trainvalid.iterrows(), datalist_test.iterrows()):
 
     # read in data
-    tvset_name = i[1][0]
-    testset_name = j[1][0]
+    tvset_name = i[1][0]  # tvset_name = datalist_trainvalid[0][0]
+    testset_name = j[1][0]  # testset_name = datalist_test[0][0]
     trainset = pd.read_csv(root_folder + data_folder + tvset_name, \
                            parse_dates=['timestamp'], index_col="timestamp").iloc[:-validation_size]
     validset = pd.read_csv(root_folder + data_folder + tvset_name, \
                            parse_dates=['timestamp'], index_col="timestamp").iloc[-validation_size:]
     testset = pd.read_csv(root_folder + data_folder + testset_name, \
                           parse_dates=['timestamp'], index_col="timestamp")
+
+    # define sample weight & attach to features
+    weight_factor = 0.994
+    ww_train = list(range(0, len(trainset)))
+    wv_train = ww_train
+    for wi, w in enumerate(ww_train):
+        wv_train[wi] = 1 - (((1 - weight_factor) * (weight_factor ** ww_train[wi])) / (1 - weight_factor))
+    # plt.plot(wv_train)
+    # plt.show()
+
+    wv_valid = [wv_train[-1]] * len(validset)  # weights for validation set
+    wv_test = [wv_train[-1]] * len(testset)  # weights for validation set
+
+    trainset['weight'] = wv_train
+    validset['weight'] = wv_valid
+    testset['weight'] = wv_test
 
     # convert data type
     trainset["DoW"] = trainset["DoW"].astype('category')
@@ -61,23 +76,6 @@ for i, j in zip(datalist_trainvalid.iterrows(), datalist_test.iterrows()):
         trainset = trainset.tail(max_rows)
     if len(testset) > max_rows:
         testset = testset.tail(max_rows)
-
-    # define sample weight
-    weight_factor = 0.994
-    ww_test = list(range(0, len(trainset)))
-    wv = ww_test
-    for wi, w in enumerate(ww_test):
-        wv[wi] = 1 - (((1 - weight_factor) * (weight_factor ** ww_test[wi])) / (1 - weight_factor))
-
-    wv = wv + [wv[-1]] * len(validset)  # weights for validation set
-    plt.plot(wv)
-    plt.show()
-
-    # define regression head
-    head = tf.estimator.RegressionHead(
-        weight_column=wv,
-        loss_fn=None
-    )
 
     # define dataset reference
     data_ref = tvset_name.replace('trainvalid_', '').replace('.csv', '')
@@ -107,28 +105,33 @@ for i, j in zip(datalist_trainvalid.iterrows(), datalist_test.iterrows()):
     x_test = testset
     y_test = x_test.pop(target_col)
 
-
     # define input function
     def input_fn(features, labels):
         """input function for train, eval, & predict"""
         # Convert the inputs to a Dataset.
-        dataset = tf.data.Dataset.from_tensor_slices((dict(features), labels))
+        dataset = tf.data.Dataset.from_tensor_slices((dict(features), labels)).batch(1)
         return dataset
 
+    def test_input_fn():
+        """input function for train, eval, & predict"""
+        # Convert the inputs to a Dataset.
+        dataset = tf.data.Dataset.from_tensor_slices((dict(x_test))).batch(1)
+        return dataset
 
     # define feature columns
     feature_columns = []
 
-    numeric_cols = x_train.keys()[x_train.keys() != 'DoW']
+    numeric_cols = x_train.keys()[(x_train.keys() != 'DoW') & (x_train.keys() != 'weight')]
     for key in numeric_cols:
         feature_columns.append(tf.feature_column.numeric_column(key=key))
 
+    # x_train.drop(columns=['DoW'], inplace=True)
+    # x_valid.drop(columns=['DoW'], inplace=True)
 
-    def one_hot_cat_column(feature_name, vocab):
+    def one_hot_cat_column(feature_name, vocabulary):
         return tf.feature_column.indicator_column(
-            tf.feature_column.categorical_column_with_vocabulary_list(feature_name, vocab)
+            tf.feature_column.categorical_column_with_vocabulary_list(feature_name, vocabulary)
         )
-
 
     cat_cols = x_train.keys()[x_train.keys() == 'DoW']
     for feature_name in cat_cols:
@@ -136,31 +139,36 @@ for i, j in zip(datalist_trainvalid.iterrows(), datalist_test.iterrows()):
         vocabulary = x_train[feature_name].unique()
         feature_columns.append(one_hot_cat_column(feature_name, vocabulary))
 
+    # define regression head
+    head = tf.estimator.RegressionHead(
+        weight_column='weight'
+        # loss_fn='mean_squared_error'
+    )
+
+    # initiate adanet evaluator
+    # eval_input_func = input_fn(x_valid, y_valid)
+    evaluator = adanet.Evaluator(
+        input_fn=lambda: input_fn(x_valid, y_valid),
+        # metric_name='adanet_loss',
+        # objective='minimize',
+        steps=max_steps
+    )
+
     # initiate adanet estimator
     model = adanet.AutoEnsembleEstimator(
         head=head,
         candidate_pool={
-            "boostedtree":
-                tf.estimator.BoostedTreesEstimator(
+            "linear":
+                tf.estimator.LinearEstimator(
                     head=head,
-                    feature_columns=feature_columns
-                    # n_batches_per_layer,
-                    # n_trees=100,
-                    # max_depth=6,
-                    # learning_rate=0.1,
-                    # l1_regularization=0.0,
-                    # l2_regularization=0.0,
-                    # tree_complexity=0.0,
-                    # min_node_weight=0.0,
-                    # config=None,
-                    # center_bias=False,
-                    # pruning_mode='none',
-                    # quantile_sketch_epsilon=0.01
+                    feature_columns=feature_columns,
+                    config=None
+                    # optimizer=...
                 ),
             "dnn":
                 tf.estimator.DNNEstimator(
                     head=head,
-                    hidden_units=[32, 32],
+                    hidden_units=[64, 64, 64],
                     feature_columns=feature_columns,
                     # optimizer='Adagrad',
                     # activation_fn=tf.nn.relu,
@@ -169,42 +177,45 @@ for i, j in zip(datalist_trainvalid.iterrows(), datalist_test.iterrows()):
                     warm_start_from=None,
                     batch_norm=True
                 )
+            # "boostedtree":
+            #     tf.estimator.BoostedTreesEstimator(
+            #         head=head,
+            #         feature_columns=feature_columns,
+            #         n_batches_per_layer = 1
+            #         # n_trees=100,
+            #         # max_depth=6,
+            #         # learning_rate=0.1,
+            #         # l1_regularization=0.0,
+            #         # l2_regularization=0.0,
+            #         # tree_complexity=0.0,
+            #         # min_node_weight=0.0,
+            #         # config=None,
+            #         # center_bias=False,
+            #         # pruning_mode='none',
+            #         # quantile_sketch_epsilon=0.01
+            #     )
         },
-        max_iteration_steps=max_steps
+        max_iteration_steps=max_steps,
+        force_grow=False,
+        evaluator=evaluator,
+        model_dir=output_folder + data_ref + "/"
     )
 
     # # define callback (early stop)
     # early_stopping_hook = tf.estimator.experimental.stop_if_no_decrease_hook(
     #     estimator=model, metric_name="loss", max_steps_without_decrease=max_steps_without_decrease)
 
-    # initiate adanet evaluator
-    evalator = adanet.Evaluator(
-        input_fn ==
-    lambda: input_fn(x_valid, y_valid),
-    # metric_name='adanet_loss',
-    # objective='minimize',
-    steps = max_steps
-    )
-
     # train model
     model.train(
-        input_fn=lambda: input_fn(x_train, train_y),
+        input_fn=lambda: input_fn(x_train, y_train),
         # hooks=[early_stopping_hook],
-        evaluator=evalator,
         steps=max_steps
     )
 
-    --------------FROM
-    HERE - ----------------------
-
-    metrics = estimator.evaluate(input_fn=lambda: input_fn(x_valid, y_valid))
-    predictions = estimator.predict(input_fn=lambda: input_fn(x_test, y_test))
+    model.evaluate(input_fn=lambda: input_fn(x_valid, y_valid), steps=None)
 
     # predict with test set
-    pred = pd.DataFrame(reg.predict(x_test), index=y_test.index).iloc[:, 0]
-
-    # evaluate the best model with testing data.
-    print(reg.evaluate(x_test, y_test))
+    pred =
 
     # plot
     axis_array = y_test.index.to_frame()['timestamp']

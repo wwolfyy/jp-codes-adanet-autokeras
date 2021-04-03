@@ -27,3 +27,9 @@ for i in modellist.iterrows():
 
 
 # %%
+import pandas as pd
+
+aa = pd.DataFrame(list(range(0,5)))
+aa.ewm(span=2).mean()
+
+aa.ewm(adjust=False,span=2).mean()
